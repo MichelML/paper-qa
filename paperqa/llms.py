@@ -15,7 +15,12 @@ from collections.abc import (
     Sized,
 )
 from typing import Any, cast
-
+from tenacity import (
+    retry,
+    stop_after_attempt,
+    wait_exponential,
+    retry_if_exception_type,
+)
 import numpy as np
 from llmclient import (
     Embeddable,
@@ -163,7 +168,8 @@ class VectorStore(BaseModel, ABC):
                 self.mmr_lambda * np_scores
                 - (1 - self.mmr_lambda) * max_sim_to_selected
             )
-            mmr_scores[selected_indices] = -np.inf  # Exclude already selected documents
+            # Exclude already selected documents
+            mmr_scores[selected_indices] = -np.inf
 
             max_mmr_index = mmr_scores.argmax()
             selected_indices.append(max_mmr_index)
@@ -260,7 +266,8 @@ class NumpyVectorStore(VectorStore):
 
         if self._texts_filter is not None:
             original_indices = np.where(self._texts_filter)[0]
-            embedding_matrix = embedding_matrix[self._texts_filter]  # type: ignore[index]
+            # type: ignore[index]
+            embedding_matrix = embedding_matrix[self._texts_filter]
         else:
             original_indices = np.arange(len(self.texts))
 
@@ -571,7 +578,8 @@ class QdrantVectorStore(VectorStore):
         async def scroll_all_points():
             offset = None
             while True:
-                response = await client.scroll(
+                response = await _scroll_with_retry(
+                    client,
                     collection_name=collection_name,
                     limit=batch_size,
                     offset=offset,
@@ -620,6 +628,26 @@ class QdrantVectorStore(VectorStore):
             f"Loaded {len(lean_docs.docs)} documents from {total_points} points"
         )
         return lean_docs
+
+
+SCROLL_MAX_RETRIES = 5
+SCROLL_BASE_DELAY = 1  # Initial delay in seconds
+SCROLL_MAX_DELAY = 32  # Maximum delay in seconds
+
+
+@retry(
+    # Retry up to MAX_RETRIES times
+    stop=stop_after_attempt(SCROLL_MAX_RETRIES),
+    wait=wait_exponential(
+        multiplier=SCROLL_BASE_DELAY, max=SCROLL_MAX_DELAY
+    ),  # Exponential backoff
+    retry=retry_if_exception_type(
+        (Exception)
+    ),  # Retry on request errors and connection timeouts
+    reraise=True,  # Raise the last exception if retries are exhausted
+)
+async def _scroll_with_retry(client, **kwargs):
+    return await client.scroll(**kwargs)
 
 
 def embedding_model_factory(embedding: str, **kwargs) -> EmbeddingModel:
