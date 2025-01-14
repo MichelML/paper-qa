@@ -576,20 +576,29 @@ class QdrantVectorStore(VectorStore):
         seen_dockeys = set()
 
         async def scroll_all_points():
-            offset = None
-            while True:
-                response = await _scroll_with_retry(
-                    client,
-                    collection_name=collection_name,
-                    limit=batch_size,
-                    offset=offset,
-                    with_payload=True,
-                    with_vectors=False,
-                )
-                points, next_offset = response
+            for i in range(0, total_points, batch_size):
+                tasks = []
+                for offset in range(
+                    i, min(i + batch_size, total_points), max_concurrent_requests
+                ):
+                    tasks.append(
+                        _scroll_with_retry(
+                            client,
+                            collection_name=collection_name,
+                            limit=max_concurrent_requests,
+                            offset=offset,
+                            with_payload=True,
+                            with_vectors=False,
+                        )
+                    )
+
+                responses = await asyncio.gather(*tasks)
+                points = []
+                for response in responses:
+                    points.append(response[0])
 
                 if not points:
-                    break
+                    continue
 
                 for point in points:
                     try:
@@ -616,11 +625,6 @@ class QdrantVectorStore(VectorStore):
                             f"Skipping invalid point due to missing field: {e!s}"
                         )
                         continue
-
-                if next_offset is None:
-                    break
-
-                offset = next_offset
 
         await scroll_all_points()
 
