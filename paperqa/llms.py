@@ -595,7 +595,7 @@ class QdrantVectorStore(VectorStore):
                 responses = await asyncio.gather(*tasks)
                 points = []
                 for response in responses:
-                    points.append(response[0])
+                    points = [*points, *response[0]]
 
                 if not points:
                     continue
